@@ -290,6 +290,11 @@ void setup() {
 
   // Configure Wi-Fi connection
   WiFiManager wm;
+
+  // 🧹 Always reset Wi-Fi credentials at startup
+  WiFi.disconnect(true, true);  // true,true => erase credentials from flash/NVS
+  delay(1000);
+
   IPAddress staticIP(192, 168, 1, 200);
   IPAddress gateway(192, 168, 1, 1);
   IPAddress subnet(255, 255, 255, 0);
