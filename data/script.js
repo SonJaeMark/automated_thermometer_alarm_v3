@@ -357,104 +357,109 @@ async function toggleConnection() {
         isConnected = false;
         updateConnectionStatus();
         showToast('Disconnected from ESP32', 'info');
-    } else {
-        // 🌐 Attempt to connect to ESP32 WebSocket
-        const esp32IP = "192.168.1.200"; // 🔧 Change this to your ESP32’s IP
-        const wsUrl = `ws://${esp32IP}/ws`;
+        return;
+    }
+
+    try {
+        // 🌐 Load ESP32 IP dynamically from /config.js
+        const configResponse = await fetch('/config.js', { cache: 'no-store' });
+        const configText = await configResponse.text();
+        eval(configText); // defines CONFIG = { ESP32_IP: "x.x.x.x", WS_PORT: 80 }
+
+        const esp32IP = CONFIG.ESP32_IP;
+        const wsUrl = `ws://${esp32IP}:${CONFIG.WS_PORT}/ws`;
+        console.log(`🔗 Attempting to connect to ${wsUrl}`);
+
         isConnecting = true;
         updateConnectionStatus();
 
-        try {
-            ws = new WebSocket(wsUrl);
+        ws = new WebSocket(wsUrl);
 
-            // When connection opens
-            ws.onopen = () => {
-                isConnecting = false;
-                isConnected = true;
-                updateConnectionStatus();
-                ws.send("web_connected"); // 🟢 Notify ESP32
-                showToast('✅ Connected to ESP32!', 'success');
-                ws.send("test"); // Check if this connection is allowed
-            };
+        // When connection opens
+        ws.onopen = () => {
+            isConnecting = false;
+            isConnected = true;
+            updateConnectionStatus();
+            ws.send("web_connected");
+            ws.send("test");
+            showToast('✅ Connected to ESP32!', 'success');
+        };
 
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
+        // When messages are received
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
 
-                    // 🧩 Check if ESP32 rejected connection (only one client allowed)
-                    if (data.error && data.error === "another user is already connected") {
-                        console.warn("Another client is already connected. Showing blocking modal...");
-                        showConnectionLockModal(); // 🚫 Show blocking modal
+                // 🧩 Check if ESP32 rejected connection (only one client allowed)
+                if (data.error && data.error === "another user is already connected") {
+                    console.warn("Another client is already connected. Showing blocking modal...");
+                    showConnectionLockModal();
 
-                        // Retry every 3 seconds until slot is free
-                        const retryInterval = setInterval(() => {
-                            console.log("🔄 Retrying ESP32 connection check...");
-                            const checkSocket = new WebSocket(`ws://${"192.168.1.200"}/ws`);
+                    // Retry every 3 seconds until slot is free
+                    const retryInterval = setInterval(() => {
+                        console.log("🔄 Retrying ESP32 connection check...");
+                        const checkSocket = new WebSocket(`ws://${esp32IP}/ws`);
 
-                            checkSocket.onopen = () => {
-                                checkSocket.send("test");
-                            };
+                        checkSocket.onopen = () => checkSocket.send("test");
 
-                            checkSocket.onmessage = (evt) => {
-                                try {
-                                    const reply = JSON.parse(evt.data);
-                                    if (reply.status === "ok") {
-                                        console.log("✅ Connection slot now available!");
-                                        clearInterval(retryInterval);
-                                        hideConnectionLockModal(); // Hide modal
-                                        checkSocket.close();
-                                        toggleConnection(); // Reconnect automatically
-                                    }
-                                } catch (err) {
-                                    console.error("Error checking connection:", err);
+                        checkSocket.onmessage = (evt) => {
+                            try {
+                                const reply = JSON.parse(evt.data);
+                                if (reply.status === "ok") {
+                                    console.log("✅ Connection slot now available!");
+                                    clearInterval(retryInterval);
+                                    hideConnectionLockModal();
+                                    checkSocket.close();
+                                    toggleConnection(); // Reconnect automatically
                                 }
-                            };
+                            } catch (err) {
+                                console.error("Error checking connection:", err);
+                            }
+                        };
 
-                            checkSocket.onerror = () => checkSocket.close();
-                        }, 3000); // retry every 3 seconds
+                        checkSocket.onerror = () => checkSocket.close();
+                    }, 3000);
 
-                        ws.close(); // Close the blocked connection
-                        isConnected = false;
-                        updateConnectionStatus();
-                        return;
-                    }
-
-                    // ✅ Normal ESP32 data
-                    if (data.temperature !== undefined) {
-                        handleESP32Data(data);
-                    }
-                } catch (err) {
-                    console.error("Invalid data from ESP32:", event.data);
+                    ws.close();
+                    isConnected = false;
+                    updateConnectionStatus();
+                    return;
                 }
-            };
 
+                // ✅ Normal ESP32 data
+                if (data.temperature !== undefined) {
+                    handleESP32Data(data);
+                }
+            } catch (err) {
+                console.error("Invalid data from ESP32:", event.data);
+            }
+        };
 
+        // When connection closes
+        ws.onclose = () => {
+            ws.send?.("web_disconnected");
+            isConnected = false;
+            updateConnectionStatus();
+            showToast('🔌 Connection closed', 'warning');
+        };
 
-            // When connection closes
-            ws.onclose = () => {
-                ws.send?.("web_disconnected"); // 🟢 Notify ESP32
-                isConnected = false;
-                updateConnectionStatus();
-                showToast('🔌 Connection closed', 'warning');
-            };
-
-            // Handle connection errors
-            ws.onerror = (err) => {
-                console.error("WebSocket error:", err);
-                showToast('⚠️ WebSocket connection failed', 'error');
-                isConnecting = false;
-                isConnected = false;
-                updateConnectionStatus();
-            };
-        } catch (e) {
-            console.error(e);
-            showToast('Failed to connect to ESP32', 'error');
+        // Handle connection errors
+        ws.onerror = (err) => {
+            console.error("WebSocket error:", err);
+            showToast('⚠️ WebSocket connection failed', 'error');
             isConnecting = false;
             isConnected = false;
             updateConnectionStatus();
-        }
+        };
+    } catch (error) {
+        console.error("❌ Failed to fetch config.js or connect:", error);
+        showToast('Failed to connect — could not load ESP32 IP', 'error');
+        isConnecting = false;
+        isConnected = false;
+        updateConnectionStatus();
     }
 }
+
 
 
 // Dashboard functions

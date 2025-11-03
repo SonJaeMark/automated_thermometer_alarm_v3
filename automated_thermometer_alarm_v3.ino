@@ -315,6 +315,13 @@ void setup() {
   // Serve all files from LittleFS root directory
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 
+  // Serve dynamic config.js so JS always gets the correct ESP32 IP
+  server.on("/config.js", HTTP_GET, [](AsyncWebServerRequest *request){
+    String js = "const CONFIG = { ESP32_IP: '" + WiFi.localIP().toString() + "', WS_PORT: 80 };";
+    request->send(200, "application/javascript", js);
+  });
+
+
   // Initialize WebSocket
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
