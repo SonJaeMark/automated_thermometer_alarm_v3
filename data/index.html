@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>ESP32 Chemical Sensor Dashboard</title>
+        <script src="/_sdk/data_sdk.js"></script>
+        <script src="/_sdk/element_sdk.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <link rel="stylesheet" href="stylesheet.css">
+        <script src="https://cdn.tailwindcss.com" type="text/javascript"></script>
+    </head>
+    <body>
+        <div class="container">
+        <div class="header">
+        <h1 id="app-title">ESP32 Chemical Sensor Dashboard</h1>
+        </div>
+        <div class="nav-tabs"><button class="nav-tab active" onclick="showPage('dashboard')" id="dashboard-tab"><span>Dashboard</span></button> <button class="nav-tab" onclick="showPage('database')" id="database-tab"><span>Chemical Database</span></button> <button class="nav-tab" onclick="showPage('about')" id="about-tab"><span>About</span></button>
+        </div><!-- Dashboard Page -->
+        <div id="dashboard" class="page active">
+        <div class="dashboard-grid">
+            <div class="sensor-card">
+            <h3>Current Temperature</h3>
+            <div class="sensor-value current-temp" id="current-temp">
+            23.5°C
+            </div>
+            <div class="connection-status">
+            <div class="status-indicator" id="connection-indicator"></div><span id="connection-text">Disconnected</span>
+            </div><button class="btn btn-primary connection-btn" id="connect-btn" onclick="toggleConnection()">Test Connection</button>
+            </div>
+            <div class="sensor-card">
+            <h3>Threshold Temperature</h3>
+            <div class="sensor-value threshold-temp" id="threshold-display">
+            100.0°C
+            </div>
+            <div>
+            Alert Level
+            </div>
+            </div>
+        </div>
+        <div class="chart-container">
+            <canvas id="temperatureChart"></canvas>
+        </div>
+        <div class="controls">
+            <div class="threshold-input"><label for="threshold-input">Set Threshold (°C)</label> <input type="number" id="threshold-input" value="100" step="0.1" min="-273" max="1000"> <button class="btn btn-primary" onclick="updateThreshold()">Update Threshold</button>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px;"><button class="btn btn-success" id="record-btn" onclick="toggleRecording()">Start Recording</button> <button class="btn btn-secondary" onclick="saveData()">Save Data</button>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px;"><button class="btn btn-primary" onclick="clearChart()">Clear Chart</button> <button class="btn btn-secondary" onclick="exportData()">Export CSV</button>
+            </div>
+        </div>
+        </div><!-- Database Page -->
+        <div id="database" class="page">
+        <div class="database-controls"><input type="text" class="search-box" id="search-input" placeholder="Search chemicals..." onkeyup="filterTable()"> <button class="btn btn-primary" onclick="openAddModal()">Add Chemical</button>
+        </div>
+        <div class="table-container">
+            <table id="chemicals-table">
+            <thead>
+            <tr>
+            <th>Chemical Name</th>
+            <th>Formula</th>
+            <th>Boiling Point (°C)</th>
+            <th>Freezing Point (°C)</th>
+            <th>Hazard Level</th>
+            <th>Notes</th>
+            <th>Actions</th>
+            </tr>
+            </thead>
+            <tbody id="chemicals-tbody"><!-- Chemical data will be populated here -->
+            </tbody>
+            </table>
+        </div>
+        </div><!-- About Page -->
+        <div id="about" class="page">
+        <div class="about-content">
+            <h2>ESP32 Chemical Boiling Point Temperature Sensor</h2>
+            <p>This web interface provides real-time monitoring and data management for your ESP32-based chemical temperature sensor system. Designed for laboratory and industrial applications, it offers comprehensive temperature tracking with chemical database integration.</p>
+            <h2>Key Features</h2>
+            <ul class="feature-list">
+            <li>Real-time temperature monitoring with live graphical display</li>
+            <li>Customizable temperature threshold alerts</li>
+            <li>Data recording and export capabilities</li>
+            <li>Comprehensive chemical database with safety information</li>
+            <li>Hazard level classification system</li>
+            <li>CSV data export for analysis</li>
+            <li>Responsive design for desktop and mobile devices</li>
+            </ul>
+            <h2>Safety Information</h2>
+            <p>Always follow proper laboratory safety protocols when working with chemicals. The hazard levels in the database are for reference only and should not replace official safety data sheets (SDS). Ensure proper ventilation and personal protective equipment when conducting experiments.</p>
+            <h2>Technical Specifications</h2>
+            <p>Compatible with ESP32 microcontrollers equipped with temperature sensors. Supports temperature ranges from -273°C to 1000°C with configurable precision. Data is stored locally in your browser and can be exported for external analysis.</p>
+            <h2>Version Information</h2>
+            <p>Dashboard Version: 1.0.0<br>
+            Last Updated: 2024<br>
+            Compatible with: ESP32, ESP32-S2, ESP32-C3</p>
+        </div>
+        </div>
+        </div><!-- Add/Edit Chemical Modal -->
+        <div id="chemical-modal" class="modal">
+        <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title" id="modal-title">Add Chemical</h3><button class="close-btn" onclick="closeModal()">×</button>
+        </div>
+        <form id="chemical-form">
+            <div class="form-group"><label for="chem-name">Chemical Name</label> <input type="text" id="chem-name" required>
+            </div>
+            <div class="form-group"><label for="chem-formula">Chemical Formula</label> <input type="text" id="chem-formula" required>
+            </div>
+            <div class="form-group"><label for="boiling-point">Boiling Point (°C)</label> <input type="number" id="boiling-point" step="0.1" required>
+            </div>
+            <div class="form-group"><label for="freezing-point">Freezing Point (°C)</label> <input type="number" id="freezing-point" step="0.1" required>
+            </div>
+            <div class="form-group"><label for="hazard-level">Hazard Level</label> <select id="hazard-level" required> <option value="">Select hazard level</option> <option value="Low">Low</option> <option value="Medium">Medium</option> <option value="High">High</option> </select>
+            </div>
+            <div class="form-group"><label for="chem-notes">Notes</label> <textarea id="chem-notes" placeholder="Additional notes about the chemical..."></textarea>
+            </div>
+            <div class="modal-actions"><button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button> <button type="submit" class="btn btn-primary">Save Chemical</button>
+            </div>
+        </form>
+        </div>
+        </div>
+        <!-- 🔒 Connection Lock Modal -->
+        <div id="connection-lock-modal" style="
+        position: fixed;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(0, 0, 0, 0.85);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+        ">
+        <div style="
+            background: #1e293b;
+            color: #f1f5f9;
+            padding: 30px 40px;
+            border-radius: 12px;
+            text-align: center;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+        ">
+            <h2 style="color:#f87171; margin-bottom:15px;">⚠️ Device Already Connected</h2>
+            <p style="font-size: 15px; line-height:1.6; margin-bottom: 10px;">
+            Another device is currently using this ESP32 connection.<br>
+            Please wait until it disconnects.
+            </p>
+            <div id="connection-status-msg" style="color:#93c5fd; font-size:14px;">
+            Waiting for connection slot to become available...
+            </div>
+        </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+        <script src="script.js"></script>
+        <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'994f39bf91dc35a4',t:'MTc2MTUzNjk4OC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script>
+    </body>
+</html>
