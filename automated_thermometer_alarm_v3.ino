@@ -328,7 +328,9 @@ void setup() {
 
   // Start HTTP server
   server.begin();
-  Serial.println("🌐 Server started → http://192.168.1.200");
+  Serial.println("🌐 Server started → ");
+  Serial.print("http://");
+  Serial.println(WiFi.localIP());
 }
 
 // -------------------- LOOP --------------------
