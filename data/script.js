@@ -349,9 +349,14 @@ function updateConnectionStatus() {
  * 🔴 Red LED = Threshold alert
  * 🟡 Yellow LED = Recording
  */
+// === Global Reconnect Settings ===
+let reconnectInterval = null;
+const reconnectDelay = 3000; // 3 seconds
+
 async function toggleConnection() {
     if (isConnected) {
-        // 🔌 Disconnect from ESP32
+        // 🔌 Manual Disconnect
+        clearInterval(reconnectInterval);
         if (ws && ws.readyState === WebSocket.OPEN) ws.send("web_disconnected");
         ws.close();
         isConnected = false;
@@ -360,105 +365,117 @@ async function toggleConnection() {
         return;
     }
 
-    try {
-        // 🌐 Load ESP32 IP dynamically from /config.js
-        const configResponse = await fetch('/config.js', { cache: 'no-store' });
-        const configText = await configResponse.text();
-        eval(configText); // defines CONFIG = { ESP32_IP: "x.x.x.x", WS_PORT: 80 }
+    // 🌐 Try multiple possible addresses (auto fallback)
+    const possibleHosts = [
+        "esp32.local",        // ✅ mDNS (preferred)
+        window.location.hostname, // same host if dashboard is on ESP32
+        "192.168.1.200",      // home Wi-Fi
+        "192.168.43.200",     // Android hotspot
+        "172.20.10.5"         // iPhone hotspot
+    ];
 
-        const esp32IP = CONFIG.ESP32_IP;
-        const wsUrl = `ws://${esp32IP}:${CONFIG.WS_PORT}/ws`;
-        console.log(`🔗 Attempting to connect to ${wsUrl}`);
+    isConnecting = true;
+    updateConnectionStatus();
+    let connected = false;
 
-        isConnecting = true;
-        updateConnectionStatus();
+    for (const host of possibleHosts) {
+        try {
+            const wsUrl = `ws://${host}/ws`;
+            console.log(`🔗 Trying ${wsUrl}`);
 
-        ws = new WebSocket(wsUrl);
+            ws = new WebSocket(wsUrl);
 
-        // When connection opens
-        ws.onopen = () => {
-            isConnecting = false;
-            isConnected = true;
-            updateConnectionStatus();
-            ws.send("web_connected");
-            ws.send("test");
-            showToast('✅ Connected to ESP32!', 'success');
-        };
+            // Wrap connection in a Promise for timeout handling
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject("timeout"), 3000);
 
-        // When messages are received
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                // 🧩 Check if ESP32 rejected connection (only one client allowed)
-                if (data.error && data.error === "another user is already connected") {
-                    console.warn("Another client is already connected. Showing blocking modal...");
-                    showConnectionLockModal();
-
-                    // Retry every 3 seconds until slot is free
-                    const retryInterval = setInterval(() => {
-                        console.log("🔄 Retrying ESP32 connection check...");
-                        const checkSocket = new WebSocket(`ws://${esp32IP}/ws`);
-
-                        checkSocket.onopen = () => checkSocket.send("test");
-
-                        checkSocket.onmessage = (evt) => {
-                            try {
-                                const reply = JSON.parse(evt.data);
-                                if (reply.status === "ok") {
-                                    console.log("✅ Connection slot now available!");
-                                    clearInterval(retryInterval);
-                                    hideConnectionLockModal();
-                                    checkSocket.close();
-                                    toggleConnection(); // Reconnect automatically
-                                }
-                            } catch (err) {
-                                console.error("Error checking connection:", err);
-                            }
-                        };
-
-                        checkSocket.onerror = () => checkSocket.close();
-                    }, 3000);
-
-                    ws.close();
-                    isConnected = false;
+                ws.onopen = () => {
+                    clearTimeout(timeout);
+                    connected = true;
+                    isConnecting = false;
+                    isConnected = true;
                     updateConnectionStatus();
-                    return;
-                }
+                    ws.send("web_connected");
+                    ws.send("test");
+                    showToast(`✅ Connected via ${host}`, 'success');
+                    setupWebSocketHandlers(); // Attach event handlers
+                    startAutoReconnect();     // Start auto reconnect watcher
+                    resolve();
+                };
 
-                // ✅ Normal ESP32 data
-                if (data.temperature !== undefined) {
-                    handleESP32Data(data);
-                }
-            } catch (err) {
-                console.error("Invalid data from ESP32:", event.data);
-            }
-        };
+                ws.onerror = (err) => {
+                    clearTimeout(timeout);
+                    console.warn(`⚠️ WebSocket error on ${host}`, err);
+                    ws.close();
+                    reject(err);
+                };
+            });
 
-        // When connection closes
-        ws.onclose = () => {
-            ws.send?.("web_disconnected");
-            isConnected = false;
-            updateConnectionStatus();
-            showToast('🔌 Connection closed', 'warning');
-        };
+            if (connected) break;
+        } catch (err) {
+            console.log(`❌ Failed to connect to ${host}`);
+        }
+    }
 
-        // Handle connection errors
-        ws.onerror = (err) => {
-            console.error("WebSocket error:", err);
-            showToast('⚠️ WebSocket connection failed', 'error');
-            isConnecting = false;
-            isConnected = false;
-            updateConnectionStatus();
-        };
-    } catch (error) {
-        console.error("❌ Failed to fetch config.js or connect:", error);
-        showToast('Failed to connect — could not load ESP32 IP', 'error');
+    if (!connected) {
+        showToast('⚠️ Unable to connect to ESP32 on any known address', 'error');
         isConnecting = false;
         isConnected = false;
         updateConnectionStatus();
     }
 }
+
+
+// === Auto-Reconnect Handler ===
+function startAutoReconnect() {
+    clearInterval(reconnectInterval);
+    reconnectInterval = setInterval(() => {
+        if (!isConnected && !isConnecting) {
+            console.log("🔄 Attempting automatic reconnection...");
+            toggleConnection();
+        }
+    }, reconnectDelay);
+}
+
+
+// === WebSocket Event Handlers ===
+function setupWebSocketHandlers() {
+    ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+
+            // 🚫 Another client already connected
+            if (data.error === "another user is already connected") {
+                showConnectionLockModal();
+                ws.close();
+                isConnected = false;
+                updateConnectionStatus();
+                return;
+            }
+
+            // 🌡️ Normal ESP32 data
+            if (data.temperature !== undefined) {
+                handleESP32Data(data);
+            }
+        } catch (err) {
+            console.error("Invalid ESP32 data:", event.data);
+        }
+    };
+
+    ws.onclose = () => {
+        console.log("🔌 WebSocket closed. Reconnecting soon...");
+        isConnected = false;
+        updateConnectionStatus();
+        showToast('🔌 Lost connection to ESP32', 'warning');
+    };
+
+    ws.onerror = (err) => {
+        console.error("⚠️ WebSocket error:", err);
+        isConnected = false;
+        updateConnectionStatus();
+    };
+}
+
 
 
 

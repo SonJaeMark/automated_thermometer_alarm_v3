@@ -1,44 +1,55 @@
 /**
  * @file automated_thermometer_alarm_v3.ino
- * @brief ESP32-based MAX6675 temperature monitoring system with LittleFS web hosting and WebSocket communication.
+ * @brief ESP32-based automated thermometer and alarm system with WebSocket communication and web dashboard.
  *
  * ## Overview
- * This firmware allows an ESP32 to:
- * - Serve a Supabase-connected dashboard via LittleFS (`index.html`, `style.css`, `script.js`)
- * - Connect to Wi-Fi using WiFiManager (no hardcoded credentials)
- * - Stream real-time temperature readings from a MAX6675 thermocouple over WebSocket
- * - Control active-low LEDs for connection, reading, recording, and threshold alerts
+ * This firmware enables an ESP32 to:
+ * - Host a real-time monitoring dashboard via LittleFS (`index.html`, `stylesheet.css`, `script.js`)
+ * - Connect to any Wi-Fi network using WiFiManager (no hardcoded credentials)
+ * - Serve data and commands over WebSocket for two-way communication with the browser
+ * - Read temperature values from a MAX6675 thermocouple sensor
+ * - Control active-low LEDs to indicate connection, data reading, recording, and alert states
  *
- * ## Features
- * - Wi-Fi configuration portal (`ESP32-Setup`) with static IP 192.168.1.200
- * - WebSocket server endpoint `/ws`
- * - Active-low LED logic:
- *   - LOW = ON
- *   - HIGH = OFF
- * - JSON-based communication protocol between ESP32 and browser client
+ * ## Key Features
+ * - 📶 **Wi-Fi Setup Portal:** Opens automatically as `ESP32-Setup` for entering Wi-Fi credentials
+ * - 🌐 **mDNS Access:** Once connected, dashboard is available at `http://esp32.local`
+ * - ⚡ **WebSocket Endpoint:** `/ws` — handles JSON messages between ESP32 and web client
+ * - 💡 **LED Indicators (Active-Low Logic):**
+ *   - 🟢 Green  → Web connection status (ON when connected)
+ *   - 🔵 Blue   → Reading indicator (blinks on temperature read)
+ *   - 🟡 Yellow → Recording indicator (blinks while recording)
+ *   - 🔴 Red    → Threshold alert indicator (blinks on alert condition)
+ * - 🧩 **Auto Reconnect:** Browser dashboard automatically reconnects if ESP32 restarts or network changes
  *
- * Commands:
- *   - "test"              → replies { "status": "ok" }
- *   - "web_connected"     → turns ON green LED
- *   - "web_disconnected"  → turns OFF green LED
- *   - "start_record"      → begins saving readings, yellow LED blinks
- *   - "end_record"        → stops recording
- *   - "threshold_alert_on"   → blinks red LED (0.5s cycle)
- *   - "threshold_alert_off"  → stops blinking red LED
- *   - "get_record"        → sends recorded readings as JSON array
+ * ## WebSocket Commands
+ * | Command                | Action / Response                                  |
+ * |------------------------|----------------------------------------------------|
+ * | `"test"`               | Replies `{ "status": "ok" }`                       |
+ * | `"web_connected"`      | Turns ON green LED                                 |
+ * | `"web_disconnected"`   | Turns OFF green LED                                |
+ * | `"start_record"`       | Starts recording and blinks yellow LED             |
+ * | `"end_record"`         | Stops recording and turns off yellow LED           |
+ * | `"threshold_alert_on"` | Starts red LED blinking (0.5 s interval)           |
+ * | `"threshold_alert_off"`| Stops red LED blinking                             |
+ * | `"get_record"`         | Sends recorded readings as JSON array              |
  *
- * @note Default static IP: 192.168.1.200
- * ## Author
+ * ## Notes
+ * - Default access URL after Wi-Fi setup: **http://esp32.local**
+ * - Only one WebSocket client can connect at a time (connection lock mechanism)
+ * - Uses non-blocking timers for LED blinking and periodic sensor updates
+ *
  * @author Mark Jayson Lanuzo
  * @date 2025-10-30
  */
 
 #include <WiFiManager.h>         ///< Library for easy Wi-Fi configuration
 #include <ESPAsyncWebServer.h>   ///< Asynchronous web server for serving pages and WebSocket
-#include <AsyncTCP.h>            ///< TCP support for AsyncWebServer
+#include <AsyncTCP.h>            ///< TCP support for AsyncWebServer (for ESP32)
 #include <ArduinoJson.h>         ///< JSON encoding/decoding for WebSocket communication
 #include <max6675.h>             ///< MAX6675 thermocouple sensor driver
 #include <LittleFS.h>            ///< Filesystem library for storing web assets
+#include <ESPmDNS.h>             ///< For mDNS hostname (esp32.local)
+
 
 // -------------------- GLOBAL OBJECTS --------------------
 
@@ -288,39 +299,73 @@ void setup() {
     return;
   }
 
-  // Configure Wi-Fi connection
   WiFiManager wm;
 
-  // 🧹 Always reset Wi-Fi credentials at startup
-  WiFi.disconnect(true, true);  // true,true => erase credentials from flash/NVS
-  delay(1000);
+  // Optional: comment this if you want credentials remembered between boots
+  // wm.resetSettings();
 
+  // Static IP config (will be ignored if DHCP is used)
   IPAddress staticIP(192, 168, 1, 200);
   IPAddress gateway(192, 168, 1, 1);
   IPAddress subnet(255, 255, 255, 0);
   IPAddress dns(8, 8, 8, 8);
   wm.setSTAStaticIPConfig(staticIP, gateway, subnet, dns);
 
-  // Launch Wi-Fi manager portal if not connected
-  bool res = wm.autoConnect("ESP32-Setup", "12345678");
+  // 🔹 Create custom success page after WiFi is connected
+  wm.setSaveConfigCallback([]() {
+    Serial.println("💾 Wi-Fi credentials saved!");
+  });
+
+  // When WiFi connects, show custom success page
+  wm.setBreakAfterConfig(true);
+
+  // Start captive portal
+  bool res = wm.autoConnect("ESP32-Setup", "12345678"); // SSID & password for setup AP
+
   if (!res) {
-    Serial.println("❌ WiFi failed");
-    return;
+    Serial.println("❌ WiFi connection failed. Restarting...");
+    delay(3000);
+    ESP.restart();
   }
 
-  Serial.println("✅ Connected to WiFi");
+  Serial.println("✅ Connected to WiFi!");
   Serial.print("📡 IP: ");
   Serial.println(WiFi.localIP());
 
-  // Serve all files from LittleFS root directory
+  // 🔹 Start mDNS (access via http://esp32.local)
+  if (MDNS.begin("esp32")) {
+    Serial.println("🌐 mDNS responder started: http://esp32.local");
+  } else {
+    Serial.println("⚠️ mDNS failed to start!");
+  }
+
+  // Serve all files from LittleFS root
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 
-  // Serve dynamic config.js so JS always gets the correct ESP32 IP
-  server.on("/config.js", HTTP_GET, [](AsyncWebServerRequest *request){
-    String js = "const CONFIG = { ESP32_IP: '" + WiFi.localIP().toString() + "', WS_PORT: 80 };";
-    request->send(200, "application/javascript", js);
+  // 🔹 Add a success page when WiFi setup finishes
+  server.on("/connected", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String ip = WiFi.localIP().toString();
+    String page = R"rawliteral(
+      <html>
+      <head><title>Wi-Fi Connected</title>
+      <meta name='viewport' content='width=device-width,initial-scale=1.0'>
+      <style>
+      body {font-family:Arial;background:#0f172a;color:white;text-align:center;padding-top:60px;}
+      a {display:inline-block;margin-top:20px;padding:12px 20px;background:#2563eb;color:white;
+         border-radius:8px;text-decoration:none;font-weight:600;}
+      </style>
+      </head>
+      <body>
+      <h1>✅ ESP32 Connected to Wi-Fi!</h1>
+      <p>Your device is now connected to the internet.</p>
+      <p><b>Local IP:</b> )rawliteral" + ip +
+      R"rawliteral(</p>
+      <a href='http://esp32.local'>Go to Dashboard</a><br><br>
+      <a href='http://)" + ip + R"rawliteral(/'>Open via IP</a>
+      </body></html>
+    )rawliteral";
+    request->send(200, "text/html", page);
   });
-
 
   // Initialize WebSocket
   ws.onEvent(onWsEvent);
@@ -328,10 +373,14 @@ void setup() {
 
   // Start HTTP server
   server.begin();
-  Serial.println("🌐 Server started → ");
-  Serial.print("http://");
+
+  Serial.println("🚀 Web server started!");
+  Serial.println("👉 Dashboard available at:");
+  Serial.println("   http://esp32.local");
+  Serial.print("   http://");
   Serial.println(WiFi.localIP());
 }
+
 
 // -------------------- LOOP --------------------
 
